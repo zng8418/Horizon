@@ -1,17 +1,23 @@
 name: Daily Horizon Summary
 
 on:
-  # schedule:
-  #   - cron: '0 0 */2 * *'  # Runs every 2 days at 00:00 UTC
-  #     timezone: 'Asia/Shanghai'
-  workflow_dispatch:      # Allow manual trigger
+  # 每天北京时间早上 8 点跑（UTC 0:00 = CST 8:00）
+  schedule:
+    - cron: '0 0 * * *'
+      timezone: 'Asia/Shanghai'
+  workflow_dispatch:  # 也支持手动触发
+
+permissions:
+  contents: write  # 需要写权限来 commit 摘要到 main + push 到 gh-pages
+
+concurrency:
+  group: horizon-daily
+  cancel-in-progress: false
 
 jobs:
   daily-summary:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write  # Needed to commit changes
-
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -27,28 +33,53 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: Prepare GitHub Actions config
-        run: cp data/config.github.json data/config.json
+      - name: Verify config exists
+        run: |
+          if [ ! -f data/config.json ]; then
+            echo "::error::data/config.json not found. Commit your config or add a 'Prepare config' step."
+            exit 1
+          fi
+          echo "Using config:"
+          cat data/config.json | head -30
 
       - name: Run Horizon
         env:
-          # Map secrets to environment variables expected by config.json
-          # Modify these based on your data/config.github.json provider settings
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          LWN_KEY: ${{ secrets.LWN_KEY }}
-        run: uv run horizon --hours 48
+          # Primary AI: 智谱 GLM-5 (anthropic-compatible endpoint)
+          ZHIPU_API_KEY: *** secrets.ZHIPU_API_KEY }}
+          # Backup AI: MiniMax-M3 (切换 provider 时用)
+          MINIMAX_API_KEY: *** secrets.MINIMAX_API_KEY }}
+          # Source tokens
+          GITHUB_TOKEN: *** secrets.HORIZON_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
+          APIFY_TOKEN: *** secrets.APIFY_TOKEN }}
+          LWN_KEY: *** secrets.LWN_KEY }}
+          # Output channels
+          HORIZON_WEBHOOK_URL: *** secrets.HORIZON_WEBHOOK_URL }}
+          EMAIL_PASSWORD: *** secrets.EMAIL_PASSWORD }}
+        run: |
+          echo "🤖 Running horizon for the last 48 hours..."
+          uv run horizon --hours 48
 
-      - name: Set current date as environment variable
-        run: echo "DATE=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
+      - name: Set current date
+        run: echo "DATE=$(date -u +'%Y-%m-%d')" >> $GITHUB_ENV
+
+      - name: Commit summary back to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/summaries/ docs/_posts/
+          if git diff --cached --quiet; then
+            echo "No summary changes to commit"
+          else
+            git commit -m "📝 Daily Summary: ${{ env.DATE }}"
+            git push
+          fi
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: *** secrets.GITHUB_TOKEN }}
           publish_dir: ./docs
-          keep_files: true  # Keep existing summaries on gh-pages branch
+          keep_files: true
           commit_message: "📝 Daily Summary: ${{ env.DATE }}"
           publish_branch: gh-pages
           enable_jekyll: true
